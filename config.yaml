@@ -1,0 +1,280 @@
+# Конфигурационный файл 
+
+# ОСНОВНЫЕ НАСТРОЙКИ 
+
+wd: "/home/vokuneva/python_lib/tomsk" # рабочая директория
+output_dir: "results" # папка для сохранения результатов 
+models_dir: "models" # папка для сохранения результатов модели машинного обучения 
+logs_dir: "logs" # папка для логирования 
+ready_dir: "ready_base" # папка для готовой базы данных 
+
+crs_code: 32645 # метрическая система координат для обработки (EPSG код)
+target_crs: 32645 # система координат целевого растра (EPSG код)
+resolution: 5.0 # разрешение выходного растра 
+
+
+# ВХОДНЫЕ ФАЙЛЫ
+
+input:
+  buildings_geojson: "buildings_2026.geojson" # векторный файл зданий 
+  roads_geojson: "roads_2026.geojson" # векторный файл дорог 
+  industrial_geojson: "land_use_2026.geojson" # векторный файл природопользования 
+  
+  dem_tiles_pattern: "dem/*_dem.tif" # паттерн пути файлов ArcticDem (как правило заканчивается на *_dem.tif)
+  copernicus_dem: "output_hh.tif"   # Copernicus (один файл)
+  fabdem_tiles_pattern: "*V1-2.tif"   # FABDEM (паттерн для нескольких тайлов)
+  
+  lcz_raster: "APT.tif" # путь к файлу ЛКЗ 
+  worldcover_pattern: "WORLDCOVER/ESA_WorldCover_10m_*.tif" # паттерн/путь к файлу наземного покрова 
+
+# ПАРАМЕТРЫ ДЛЯ МНОГОКАНАЛЬНЫХ РАСТРОВ
+
+bands:
+  # Растр canyon_params.tif (ширина и высота городского каньона)
+  canyon_width: 2
+  canyon_height: 3
+  
+  # Растр canyon_length.tif (длина, направление и SVF городского каньона)
+  canyon_direction: 2
+  canyon_length: 3
+  svf: 4
+
+# ПАРАМЕТРЫ ОБРАБОТКИ
+
+processing:
+  # Шаг 1: Растеризация зданий
+  buildings:
+    fill_value: 1
+
+  # Шаг 2: Препроцессинг (генерация тайлов)
+  preprocessing:
+    window_size: [2, 2]        # размер окна для ширины (height, width)
+    hard: false                 # использовать абсолютные значения
+    n_output_bands: 3
+  
+  # Шаг 3: Расчет ширины каньона по тайлам
+  canyon_width_tiles_first:
+    target_tiles: null
+    skip_existing: true
+    window_size: [2, 2]     
+    max_radius: 500.0
+    use_absolute: true
+  
+  # Шаг 4: Фильтрация ширины и извлечение статистики
+  width:
+    band: 2
+    invert_mask: true
+    nodata_value: 0
+    fill_filter_size: 50
+    mean_filter_size: 100
+    zonal_stats: ["mean"]
+    fallback_to_centroid: true
+  
+  # Шаг 5: Обработка DEM
+  dem_type: "arcticdem"        # arcticdem, fabdem
+
+  # Для ArcticDEM
+  arcticdem:
+    buffer_degrees: 0.005
+    nodata_value: -9999.0
+    chunk_size_interp: 500
+    chunk_size_io: 1000
+    use_tqdm: true
+    use_difference: true
+
+  # Для FABDEM (если выбран соответствующий dem_type)
+  fabdem:
+    use_difference: true        
+    nodata_value: -9999.0      
+    chunk_size_io: 1000        
+    use_tqdm: true             
+  
+  # Шаг 6: Обработка LCZ
+  lcz:
+    remove_values: [11, 12, 13, 14, 15, 16, 17]
+    fill_filter_size: 1000
+    buffer_meters: 100
+    band_number: 1
+  
+  # Шаг 7: Подготовка данных
+  prepare_features:
+    numerical_cols:
+      - "area"
+      - "isoquotient"
+      - "obox_ratio"
+      - "width_med"
+      - "obox_hw"
+      - "min_dem"
+    categorical_cols:
+      - "majority_100m"
+      - "class"
+      - "subtype"
+    target_col: "calc_height"
+    max_distance: 0.002
+    min_neighbors: 2
+    id_column: "id"
+    floors_height: 3.0
+  
+  # Шаг 8: Обучение модели
+  ml_train:
+    random_seed: 22
+
+    # параметры по умолчанию
+    iterations: 1000
+    learning_rate: 0.03
+    depth: 4
+    l2_leaf_reg: 10
+
+    # автоматический подбор
+    use_auto_tuning: true
+    auto_tuning_cv: 3
+    auto_tuning_iterations: 30
+    random_seed: 22
+    iterations: 1000
+    learning_rate: 0.03
+    depth: 6
+
+  # Шаг 9: Предсказание (признаки для модели)
+  ml_predict:
+    num_cols:
+      - "area"
+      - "isoquotient"
+      - "obox_ratio"
+      - "width_med"
+      - "obox_hw"
+      - "min_dem"
+    cat_cols:
+      - "majority_100m"
+      - "class"
+      - "subtype"
+  
+  # Шаг 10: Растеризация высот
+  rasterize_heights:
+    geometry_column: "geometry_wkt"
+    calc_column: "calc_height"
+    pred_column: "predicted"
+  
+  # Шаг 11: Препроцессинг (второй раз)
+  final_preprocessing:
+    window_size: [2, 2]
+    hard: false
+  
+  # Шаг 12: Расчет ширины каньона 
+  canyon_width_tiles_second:
+    target_tiles: null
+    skip_existing: true
+    direction: 5.0
+    max_radius: 1000.0
+    use_absolute: true
+
+  # Шаг 13: Расчет длины каньона
+  canyon_length:
+    direction: 1.0
+    max_radius: 1000.0
+    n_bands: 4              
+    dtype: "float64"        
+    compress: "lzw"         
+    nodata_value: -1  
+  
+  # Шаг 14: Растеризация дорог
+  roads:
+    super_sampling: 3
+    use_tqdm: true
+  
+  # Шаг 15: Растеризация промышленных зон
+  industrial:
+    target_value: "industrial"
+  
+  # Шаг 16: Перепроецирование World Cover
+  worldcover:
+    resampling: "nearest"
+    crop_before: false
+    buffer_meters: 0
+  
+  # Шаг 17: Перепроецирование LCZ
+  lcz_reproject:
+    resampling: "nearest"
+    band_number: 1
+    crop_before: true      
+    buffer_meters: 1000
+  
+  # Шаг 18: Перепроецирование FABDEM
+  reproject:
+    resampling: "bilinear"
+    crop_before: false
+    buffer_meters: 0
+  
+  # Шаг 19: Создание многоканального растра
+  multiband: 
+    discrete_bands: [1, 2, 9, 10, 11]  # номера дискретных каналов 
+    bands:
+      - name: "Building height"
+        source: "height_calc.tif"
+        band: 1
+      - name: "Predicted height"
+        source: "height_pred.tif"
+        band: 1
+      - name: "Canyon width"
+        source: "canyon_params.tif"
+        band: 2
+      - name: "Canyon height"
+        source: "canyon_params.tif"
+        band: 3
+      - name: "Canyon length"
+        source: "canyon_length.tif"
+        band: 3
+      - name: "Canyon direction"
+        source: "canyon_length.tif"
+        band: 2
+      - name: "SVF"
+        source: "canyon_length.tif"
+        band: 4
+      - name: "Roads"
+        source: "roads.tif"
+        band: 1
+      - name: "Industrial"
+        source: "industrial.tif"
+        band: 1
+      - name: "World cover"
+        source: "worldcover.tif"
+        band: 1
+      - name: "LCZ"
+        source: "lcz.tif"
+        band: 1
+      - name: "FABDEM"
+        source: "fabdem.tif"
+        band: 1
+  
+    nodata_value: -1
+    dtype: "int16"
+    compress: "lzw"
+
+# ВЫХОДНЫЕ ФАЙЛЫ
+
+output:
+  buildings_raster: "buildings_raster.tif"
+  distance: "distance.tif"
+  allocation: "allocation.tif"
+  tiles_width: "tiles_width.npy"
+  canyon_params_raw: "canyon_params_raw.tif"
+  width_raster: "width.tif"
+  width_csv: "buildings_width.csv"
+  dem_csv: "buildings_dem.csv"
+  arcticdem_difference: "arcticdem_difference.tif"
+  fabdem_resampled: "fabdem.tif"
+  lcz_processed: "lcz_processed.tif"
+  lcz_csv: "buildings_lcz.csv"
+  prepared_csv: "buildings_prepared.csv"
+  model_file: "catboost_model.cbm"
+  model_params: "catboost_best_params.json"
+  predictions_csv: "buildings_predicted.csv"
+  height_calc: "height_calc.tif"
+  height_pred: "height_pred.tif"
+  allocation_correct: "allocation_correct.tif"
+  canyon_params_final: "canyon_params.tif"
+  canyon_length_raster: "canyon_length.tif"
+  roads_raster: "roads.tif"
+  industrial_raster: "industrial.tif"
+  worldcover: "worldcover.tif"
+  lcz_correct: "lcz.tif"
+  final_raster: "city_params.tif"
